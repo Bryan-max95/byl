@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cors from "cors";
 import dotenv from "dotenv";
+import helmet from "helmet";
 
 dotenv.config();
 
@@ -16,6 +17,27 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "family-finance-secret";
+
+// Configurar Helmet para no bloquear Vite
+app.use(
+  helmet({
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "http://localhost:3000", "http://localhost:5173", "ws://localhost:5173"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+      },
+    },
+  })
+);
 
 app.use(cors());
 app.use(express.json());
@@ -195,18 +217,46 @@ const authenticateToken = (req: any, res: any, next: any) => {
 // Auth
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
+  
+  // Validación de entrada
+  if (!username || !password) {
+    return res.status(400).json({ error: "Usuario y contraseña son requeridos" });
+  }
+  
   try {
     const result = await pool.query("SELECT * FROM users WHERE username = $1 AND is_active = TRUE", [username]);
     const user = result.rows[0];
-    if (user && (await bcrypt.compare(password, user.password))) {
-      const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "24h" });
+    
+    if (!user) {
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+    
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    
+    if (isValidPassword) {
+      const token = jwt.sign(
+        { id: user.id, username: user.username }, 
+        JWT_SECRET, 
+        { expiresIn: "24h" }
+      );
+      
       await pool.query("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
       await logAudit(user.id, "LOGIN", "users", user.id, null, { username: user.username }, req);
-      res.json({ token, user: { id: user.id, username: user.username } });
+      
+      // Asegurar que la respuesta es un objeto JSON válido
+      res.json({ 
+        token, 
+        user: { 
+          id: user.id, 
+          username: user.username,
+          must_change_password: user.must_change_password
+        } 
+      });
     } else {
       res.status(401).json({ error: "Credenciales inválidas" });
     }
   } catch (err) {
+    console.error("Login error:", err);
     res.status(500).json({ error: "Error en el servidor" });
   }
 });
@@ -238,6 +288,7 @@ app.get("/api/dashboard/stats", authenticateToken, async (req, res) => {
       }
     });
   } catch (err) {
+    console.error("Dashboard stats error:", err);
     res.status(500).json({ error: "Error al obtener estadísticas" });
   }
 });
@@ -248,6 +299,7 @@ app.get("/api/categories", authenticateToken, async (req, res) => {
     const result = await pool.query("SELECT * FROM categories WHERE is_active = TRUE ORDER BY name ASC");
     res.json(result.rows);
   } catch (err) {
+    console.error("Categories error:", err);
     res.status(500).json({ error: "Error al obtener categorías" });
   }
 });
@@ -264,6 +316,7 @@ app.get("/api/personal/incomes", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error("Personal incomes error:", err);
     res.status(500).json({ error: "Error al obtener ingresos" });
   }
 });
@@ -278,6 +331,7 @@ app.post("/api/personal/incomes", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "personal_incomes", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("Create income error:", err);
     res.status(500).json({ error: "Error al crear ingreso" });
   }
 });
@@ -294,6 +348,7 @@ app.get("/api/personal/expenses", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error("Personal expenses error:", err);
     res.status(500).json({ error: "Error al obtener gastos" });
   }
 });
@@ -308,6 +363,7 @@ app.post("/api/personal/expenses", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "personal_expenses", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("Create expense error:", err);
     res.status(500).json({ error: "Error al crear gasto" });
   }
 });
@@ -325,6 +381,7 @@ app.get("/api/joint/expenses", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error("Joint expenses error:", err);
     res.status(500).json({ error: "Error al obtener gastos conjuntos" });
   }
 });
@@ -339,6 +396,7 @@ app.post("/api/joint/expenses", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "joint_expenses", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("Create joint expense error:", err);
     res.status(500).json({ error: "Error al crear gasto conjunto" });
   }
 });
@@ -349,6 +407,7 @@ app.get("/api/wedding/budget", authenticateToken, async (req, res) => {
     const result = await pool.query("SELECT * FROM wedding_budget LIMIT 1");
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("Wedding budget error:", err);
     res.status(500).json({ error: "Error al obtener presupuesto" });
   }
 });
@@ -364,6 +423,7 @@ app.post("/api/wedding/budget", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "UPDATE", "wedding_budget", result.rows[0].id, old.rows[0], result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("Update wedding budget error:", err);
     res.status(500).json({ error: "Error al actualizar presupuesto" });
   }
 });
@@ -379,6 +439,7 @@ app.get("/api/wedding/expenses", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error("Wedding expenses error:", err);
     res.status(500).json({ error: "Error al obtener gastos de boda" });
   }
 });
@@ -394,6 +455,7 @@ app.post("/api/wedding/expenses", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "wedding_expenses", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
+    console.error("Create wedding expense error:", err);
     res.status(500).json({ error: "Error al crear gasto de boda" });
   }
 });
@@ -410,6 +472,7 @@ app.get("/api/audit", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error("Audit logs error:", err);
     res.status(500).json({ error: "Error al obtener auditoría" });
   }
 });
