@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import pg from "pg";
@@ -7,7 +6,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cors from "cors";
 import dotenv from "dotenv";
-import helmet from "helmet";
 
 dotenv.config();
 
@@ -15,28 +13,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "family-finance-secret";
-const isProduction = process.env.NODE_ENV === "production";
 
-// Configuración de Helmet - Deshabilitar completamente CSP para evitar problemas
-// En producción, podemos usar una configuración más estricta
-app.use(
-  helmet({
-    // Deshabilitar CSP completamente (más fácil para desarrollo)
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    crossOriginOpenerPolicy: false,
-  })
-);
-
-// Configuración CORS
-app.use(cors({
-  origin: isProduction ? "https://byl-nine.vercel.app" : true,
-  credentials: true
-}));
-
+app.use(cors());
 app.use(express.json());
 
 // Database Connection
@@ -134,7 +113,6 @@ async function initDb() {
       );
     `);
 
-    // Seed initial users if none exist
     const userRes = await client.query("SELECT COUNT(*) FROM users");
     if (parseInt(userRes.rows[0].count) === 0) {
       const hashedPassword = await bcrypt.hash("admin123", 10);
@@ -142,10 +120,9 @@ async function initDb() {
         "INSERT INTO users (username, password, must_change_password) VALUES ($1, $2, $3), ($4, $5, $6)",
         ["Bryan", hashedPassword, false, "Lyndel", hashedPassword, false]
       );
-      console.log("Seeded initial users: Bryan and Lyndel (password: admin123)");
+      console.log("Seeded initial users");
     }
 
-    // Seed initial categories if none exist
     const catRes = await client.query("SELECT COUNT(*) FROM categories");
     if (parseInt(catRes.rows[0].count) === 0) {
       const categories = [
@@ -169,7 +146,6 @@ async function initDb() {
       console.log("Seeded initial categories");
     }
 
-    // Ensure at least one wedding budget exists
     const budgetRes = await client.query("SELECT COUNT(*) FROM wedding_budget");
     if (parseInt(budgetRes.rows[0].count) === 0) {
       await client.query("INSERT INTO wedding_budget (total_budget, budget_currency) VALUES ($1, $2)", [10000, "USD"]);
@@ -184,7 +160,6 @@ async function initDb() {
   }
 }
 
-// Middleware to log audits
 async function logAudit(userId: number, action: string, entity: string, entityId: number | null, oldValues: any, newValues: any, req: any) {
   try {
     await pool.query(
@@ -196,7 +171,6 @@ async function logAudit(userId: number, action: string, entity: string, entityId
   }
 }
 
-// Auth Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -209,54 +183,28 @@ const authenticateToken = (req: any, res: any, next: any) => {
   });
 };
 
-// --- API ROUTES ---
+// ========== API ROUTES ==========
 
 // Health check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "API is working", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", message: "API is working" });
 });
 
 // Auth
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
-  
-  if (!username || !password) {
-    return res.status(400).json({ error: "Usuario y contraseña son requeridos" });
-  }
-  
   try {
     const result = await pool.query("SELECT * FROM users WHERE username = $1 AND is_active = TRUE", [username]);
     const user = result.rows[0];
-    
-    if (!user) {
-      return res.status(401).json({ error: "Credenciales inválidas" });
-    }
-    
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    
-    if (isValidPassword) {
-      const token = jwt.sign(
-        { id: user.id, username: user.username }, 
-        JWT_SECRET, 
-        { expiresIn: "24h" }
-      );
-      
+    if (user && (await bcrypt.compare(password, user.password))) {
+      const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "24h" });
       await pool.query("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
       await logAudit(user.id, "LOGIN", "users", user.id, null, { username: user.username }, req);
-      
-      res.json({ 
-        token, 
-        user: { 
-          id: user.id, 
-          username: user.username,
-          must_change_password: user.must_change_password
-        } 
-      });
+      res.json({ token, user: { id: user.id, username: user.username } });
     } else {
       res.status(401).json({ error: "Credenciales inválidas" });
     }
   } catch (err) {
-    console.error("Login error:", err);
     res.status(500).json({ error: "Error en el servidor" });
   }
 });
@@ -288,7 +236,6 @@ app.get("/api/dashboard/stats", authenticateToken, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error("Dashboard stats error:", err);
     res.status(500).json({ error: "Error al obtener estadísticas" });
   }
 });
@@ -299,7 +246,6 @@ app.get("/api/categories", authenticateToken, async (req, res) => {
     const result = await pool.query("SELECT * FROM categories WHERE is_active = TRUE ORDER BY name ASC");
     res.json(result.rows);
   } catch (err) {
-    console.error("Categories error:", err);
     res.status(500).json({ error: "Error al obtener categorías" });
   }
 });
@@ -316,7 +262,6 @@ app.get("/api/personal/incomes", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Personal incomes error:", err);
     res.status(500).json({ error: "Error al obtener ingresos" });
   }
 });
@@ -331,7 +276,6 @@ app.post("/api/personal/incomes", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "personal_incomes", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("Create income error:", err);
     res.status(500).json({ error: "Error al crear ingreso" });
   }
 });
@@ -348,7 +292,6 @@ app.get("/api/personal/expenses", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Personal expenses error:", err);
     res.status(500).json({ error: "Error al obtener gastos" });
   }
 });
@@ -363,7 +306,6 @@ app.post("/api/personal/expenses", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "personal_expenses", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("Create expense error:", err);
     res.status(500).json({ error: "Error al crear gasto" });
   }
 });
@@ -381,7 +323,6 @@ app.get("/api/joint/expenses", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Joint expenses error:", err);
     res.status(500).json({ error: "Error al obtener gastos conjuntos" });
   }
 });
@@ -396,7 +337,6 @@ app.post("/api/joint/expenses", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "joint_expenses", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("Create joint expense error:", err);
     res.status(500).json({ error: "Error al crear gasto conjunto" });
   }
 });
@@ -407,7 +347,6 @@ app.get("/api/wedding/budget", authenticateToken, async (req, res) => {
     const result = await pool.query("SELECT * FROM wedding_budget LIMIT 1");
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("Wedding budget error:", err);
     res.status(500).json({ error: "Error al obtener presupuesto" });
   }
 });
@@ -423,7 +362,6 @@ app.post("/api/wedding/budget", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "UPDATE", "wedding_budget", result.rows[0].id, old.rows[0], result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("Update wedding budget error:", err);
     res.status(500).json({ error: "Error al actualizar presupuesto" });
   }
 });
@@ -439,7 +377,6 @@ app.get("/api/wedding/expenses", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Wedding expenses error:", err);
     res.status(500).json({ error: "Error al obtener gastos de boda" });
   }
 });
@@ -455,7 +392,6 @@ app.post("/api/wedding/expenses", authenticateToken, async (req: any, res) => {
     await logAudit(req.user.id, "CREATE", "wedding_expenses", result.rows[0].id, null, result.rows[0], req);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("Create wedding expense error:", err);
     res.status(500).json({ error: "Error al crear gasto de boda" });
   }
 });
@@ -472,49 +408,12 @@ app.get("/api/audit", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Audit logs error:", err);
     res.status(500).json({ error: "Error al obtener auditoría" });
   }
 });
 
-// Start Server
-async function startServer() {
-  await initDb();
-
-  if (!isProduction) {
-    // Desarrollo: usar Vite con CSP deshabilitado
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-    console.log("Vite middleware enabled for development");
-  } else {
-    // Producción: servir archivos estáticos
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      if (!req.path.startsWith("/api")) {
-        res.sendFile(path.join(distPath, "index.html"));
-      }
-    });
-    console.log("Production mode: serving static files from", distPath);
-  }
-
-  // Solo usar listen si no estamos en Vercel
-  if (process.env.VERCEL !== "1") {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-      console.log(`API available at http://localhost:${PORT}/api/health`);
-    });
-  } else {
-    console.log("Running on Vercel - serverless mode");
-  }
-}
+// Inicializar la base de datos
+await initDb();
 
 // Exportar para Vercel
-const serverPromise = startServer();
-export default async (req: any, res: any) => {
-  await serverPromise;
-  return app(req, res);
-};
+export default app;
