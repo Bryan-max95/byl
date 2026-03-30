@@ -15,31 +15,57 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "family-finance-secret";
 
-// Configurar Helmet para no bloquear Vite
-app.use(
-  helmet({
-    crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", "http://localhost:3000", "http://localhost:5173", "ws://localhost:5173"],
-        fontSrc: ["'self'", "data:"],
-        objectSrc: ["'none'"],
-        mediaSrc: ["'self'"],
-        frameSrc: ["'none'"],
+// Configurar Helmet para no bloquear Vite (solo en desarrollo)
+if (process.env.NODE_ENV !== "production") {
+  app.use(
+    helmet({
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "http://localhost:3000", "http://localhost:5173", "ws://localhost:5173"],
+          fontSrc: ["'self'", "data:"],
+          objectSrc: ["'none'"],
+          mediaSrc: ["'self'"],
+          frameSrc: ["'none'"],
+        },
       },
-    },
-  })
-);
+    })
+  );
+} else {
+  // En producción, usar Helmet con configuración más estricta pero permitiendo API
+  app.use(
+    helmet({
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "https://byl-nine.vercel.app"],
+          fontSrc: ["'self'", "data:"],
+          objectSrc: ["'none'"],
+        },
+      },
+    })
+  );
+}
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === "production" 
+    ? "https://byl-nine.vercel.app" 
+    : "http://localhost:5173",
+  credentials: true
+}));
 app.use(express.json());
 
 // Database Connection
@@ -214,11 +240,20 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
 // --- API ROUTES ---
 
+// Health check (útil para Vercel)
+app.get("/api/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({ status: "ok", database: "connected", timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ status: "error", database: "disconnected", error: err.message });
+  }
+});
+
 // Auth
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
   
-  // Validación de entrada
   if (!username || !password) {
     return res.status(400).json({ error: "Usuario y contraseña son requeridos" });
   }
@@ -243,7 +278,6 @@ app.post("/api/auth/login", async (req, res) => {
       await pool.query("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
       await logAudit(user.id, "LOGIN", "users", user.id, null, { username: user.username }, req);
       
-      // Asegurar que la respuesta es un objeto JSON válido
       res.json({ 
         token, 
         user: { 
@@ -481,6 +515,7 @@ app.get("/api/audit", authenticateToken, async (req, res) => {
 async function startServer() {
   await initDb();
 
+  // Solo usar Vite en desarrollo local
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -488,6 +523,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
+    // En producción (Vercel), servir archivos estáticos del build
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -495,9 +531,22 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  // En Vercel, no usamos app.listen, sino que exportamos app
+  if (process.env.NODE_ENV === "production") {
+    // Para Vercel, exportamos la app
+    console.log("Server ready for Vercel");
+    return app;
+  } else {
+    // Para desarrollo local
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-startServer();
+// Export para Vercel (esto es clave)
+const serverPromise = startServer();
+export default async (req: any, res: any) => {
+  const appInstance = await serverPromise;
+  return appInstance(req, res);
+};
